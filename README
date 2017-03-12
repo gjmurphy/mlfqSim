@@ -1,0 +1,22 @@
+Project 4 4760-E01
+Author: Gabriel Murphy (gjmcn6)
+Date: Mon Mar 20 STD 2017
+
+Instructions: run cmd 'make' or 'make all' to compile both executables
+of the project.
+Then run cmd './OSS' to run the project with the default preferences.
+
+Master accepts command line arguments to adjust properties of project:
+			-h: displays help message
+			-s [integer]: number of child processes spawned (max 18)
+			-i [integer]: number of writes before child terminates
+			-t [integer]: number of seconds master will wait
+			-l [filename]: name of file where log will be written
+			-c [integer]: amount sim time will be incremented
+
+Default simulated sys time increment is 100, which goes semi quickly in testing
+Can set custom with -c, but the interval must divide 1000000000.
+			
+I used git for version control. The hidden git folders are included
+in my submission--in case they don't copy over I'll
+also save 'git log' to a text file called gitlogbckup.txt
