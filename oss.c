@@ -11,49 +11,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <signal.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
 #include <sys/msg.h>
 
-// Default values of preferences
-#define DFLT_SPAWNS 5
-#define DFLT_RWAIT 20
-#define DFLT_SWAIT 2
-#define DFLT_FILEN "test.out"
-
 // Global vars, need to be global for signal handling purposes
-int *g_shs;
-int *g_shn;
-int g_shsId;
-int g_shnId;
+struct stime_t *g_stm;
+int g_stmId;
 
-int *g_pcb;
+struct pcb_t *g_pcb;
 int g_pcbId;
 
 int g_mschId;
 int g_mossId;
 
 FILE *g_output;
-
-int destroySegment(int shId, int *shp) {
-	int success = 1;
-
-	// Detach from segment
-	if (shmdt(shp) == -1) {
-		perror("Detatch shared memory failed in master");
-		success = 0;
-	}
-
-	// Signal shared segment for removal
-	if (shmctl(shId, IPC_RMID, NULL) == -1) {
-		perror("Failed to mark shared number for removal");
-		success = 0;
-	}
-
-	return success;
-}
 
 /**
 * Flags all shared mem segments for removal
@@ -62,24 +37,42 @@ int destroySegment(int shId, int *shp) {
 void cleanUp() {
 	fclose(g_output);
 
-	int success;
+	int success = 1;
 
-	success = destroySegment(g_shsId, g_shs);
+	// Detach from segment
+	if (shmdt(g_stm) == -1) {
+		perror("Detatch shared memory failed in OSS");
+		success = 0;
+	}
 
-	success = destroySegment(g_shnId, g_shn);
+	// Signal shared segment for removal
+	if (shmctl(g_stmId, IPC_RMID, NULL) == -1) {
+		perror("Failed to mark shared number for removal");
+		success = 0;
+	}
 	
-	success = destroySegment(g_pcbId, g_pcb);
+	// Detach from segment
+	if (shmdt(g_pcb) == -1) {
+		perror("Detatch shared memory failed in OSS");
+		success = 0;
+	}
+
+	// Signal shared segment for removal
+	if (shmctl(g_pcbId, IPC_RMID, NULL) == -1) {
+		perror("Failed to mark shared number for removal");
+		success = 0;
+	}
 
 	// Signal scheduler message queue for removal
 	if (msgctl(g_mschId, IPC_RMID, NULL) == -1) {
 		perror("Failed to remove OSS message queue");
-		success = 1;
+		success = 0;
 	}
 
 	// Signal oss message queue for removal
 	if (msgctl(g_mossId, IPC_RMID, NULL) == -1) {
 		perror("Failed to remove OSS message queue");
-		success = 1;
+		success = 0;
 	}
 
 	if (!success) {
@@ -88,36 +81,43 @@ void cleanUp() {
 	}
 }
 
-void createSegment(int *shId, int **shp, key_t key, size_t size) {
-	// Allocate segment of shared memory
-	if ((*shId = shmget(key, size, IPC_CREAT | 0660)) < 0) {
-		perror("Allocating shared memory failed in OSS");
-		exit(EXIT_FAILURE);
-	}
-
-	// Attach shm to segment for access
-	if ((*shp = shmat(*shId, NULL, 0)) == (int*) -1) {
-		perror("Attach shared memory failed in OSS");
-		cleanUp();
-		exit(EXIT_FAILURE);
-	}	
-}
-
 /**
 * Uses setupSegment function to allocate the needed memory segments
 */
 void setupMemory(int numProc) {
-	createSegment(&g_shsId, &g_shs, SHS_KEY, sizeof(int));
+	// Allocate segment of shared memory
+	if ((g_stmId = shmget(STM_KEY, sizeof(struct stime_t), IPC_CREAT | 0660)) < 0) {
+		perror("Allocating shared memory failed in OSS");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
 
-	createSegment(&g_shnId, &g_shn, SHN_KEY, sizeof(int));
+	// Attach shm to segment for access
+	if ((g_stm = shmat(g_stmId, NULL, 0)) == (struct stime_t*) -1) {
+		perror("Attach shared memory failed in OSS");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
 	
-	createSegment(&g_pcbId, &g_pcb, PCB_KEY, sizeof(struct pcb_type) * numProc); 
+	// Allocate segment of shared memory for pcb array
+	if ((g_pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * numProc, IPC_CREAT | 0660)) < 0) {
+		perror("Allocating shared memory failed in OSS");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
+
+	// Attach pcb to segment for access
+	if ((g_pcb = shmat(g_pcbId, NULL, 0)) == (struct pcb_t*) -1) {
+		perror("Attach shared memory failed in OSS");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
 
 	// Initialize shared seconds to 0
-	*g_shs = 0;
+	(*g_stm).sec = 0;
 
 	// Initialize shared nanoseconds to 0
-	*g_shn = 0;
+	(*g_stm).nnsec = 0;
 
 	// Create message queue used for child processes critical section lock
 	if ((g_mschId = msgget(SCH_KEY, IPC_CREAT | 0666)) < 0) {
@@ -134,6 +134,16 @@ void setupMemory(int numProc) {
 	}
 }
 
+void abortAll(pid_t *childPids, int spawns) {
+	int i;
+
+	for (i = 0; i < spawns; i++) {
+		kill(childPids[i], SIGABRT);
+	}
+
+	while (wait(NULL) > 0);
+}
+
 /**
 * Handles SIGINT ^C, waits for children then cleans up exits
 */
@@ -146,6 +156,60 @@ void sigHandler(int sig) {
 		fprintf(stderr, "OSS was interupted, exiting...\n");
 		exit(EXIT_FAILURE);	
 	}
+}
+
+void generateChild(pid_t *childPids, int spawns, int index) {
+	if (childPids[index] != -1) {
+		kill(childPids[index], SIGABRT);
+		waitpid(childPids[index], NULL, 0);
+	}
+
+	struct pcb_t pcb;
+	struct stime_t endTemp = {-1, -1};
+	pid_t thisPid;
+
+	pcb.id = index + 1;
+	pcb.priority = 1;
+	pcb.time_created = *g_stm;
+	pcb.time_ended = endTemp;
+	pcb.time_waiting = 0;
+	pcb.time_cpu = 0;
+
+	pcb.burst_needed = rand() % 5000 + 1000;
+	pcb.last_burst = 0;
+
+	g_pcb[index] = pcb;
+
+	thisPid = fork();
+
+	// Child 
+	if (thisPid == 0) {
+		char indexArg[4];
+		char spawnArg[4];
+		snprintf(indexArg, 4, "%d", index);
+		snprintf(spawnArg, 4, "%d", spawns);
+
+		// Exec Slave from child process
+		execl("./Slave", indexArg, spawnArg, NULL);
+
+		// Should never reach here
+		perror("Failed to execute Slave");
+		exit(EXIT_FAILURE);
+	}
+	// Parent
+	else {
+		childPids[0] = thisPid;
+	}
+}
+
+void incrementTime(int delta) {
+	g_stm->nnsec += delta;
+
+	// Once full second has been reached, increment sim time second and reset ns
+	if (g_stm->nnsec == NS_PER_S) {
+		g_stm->sec++;
+		g_stm->nnsec = 0;
+	}	
 }
 
 /**
@@ -170,11 +234,12 @@ int main(int argc, char **argv) {
 
 	// process variables
 	pid_t *childPids;
-	pid_t thisPid;
-	char *path = "./Slave";
 	long long realEndTime;
+	
 	int i = 0;
 	int j = 0;
+	int lineCount = 1;
+
 	struct sigaction sa;
 	struct oss_msgbuf ossBuf;
 	struct sch_msgbuf schBuf;
@@ -229,9 +294,11 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	memset(childPids, -1, spawns);
+
 	// Attempt to open file in append mode
 	if ((g_output = fopen(filename, "a")) == NULL) {
-		perror("Failed to open file in Master");
+		perror("Failed to open file in OSS");
 		cleanUp();
 		return 1;
 	}
@@ -239,43 +306,33 @@ int main(int argc, char **argv) {
 	// Start of log entry message in file
 	fputs("***LOG ENTRY BEGIN***\n", g_output);
 
-	// Forks the initial child processes
-	for (i = 0; i < spawns; i++) {
-		thisPid = fork();
-
-		// Child 
-		if (thisPid == 0) {
-			// Index in childPids array sent to child so can be msgd back when kills self
-			char index[4];
-			snprintf(index, 4, "%d", i);
-
-			// Exec Slave from child process
-			execl(path, index, NULL);
-
-			// Should never reach here
-			perror("Failed to execute Slave");
-			exit(EXIT_FAILURE);
-		}
-		// Error
-		else if (thisPid == -1) {
-			perror("Failed to fork!");
-			// Kill any previously forked children
-			for (j = 0; j < i; j++) {
-				kill(childPids[j], SIGABRT);
-			}
-			while (wait(NULL) > 0);
-			cleanUp();
-			return 1;
-		} 
-		// Parent
-		else {
-			childPids[i] = thisPid;
-		}	
-	}
-
 	// The real time in nanoseconds that OSS should terminate if hasn't already finished
 	realEndTime = nsSinceEpoch() + (waitReal * ((long long) NS_PER_S));
 
+	srand(time(NULL));
+
+	generateChild(childPids, spawns, 0);
+	
+	schBuf.mtype = g_pcb[0].id;
+	schBuf.quantum = 700;
+
+
+	if (msgsnd(g_mschId, &schBuf, sizeof(struct sch_msgbuf), 0) == -1) {
+			perror("OSS failed to send sch messege");
+			cleanUp();
+			exit(EXIT_FAILURE);
+	}
+
+	if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
+			perror("OSS failed to receive return message");
+			cleanUp();
+			exit(EXIT_FAILURE);
+	}
+
+
+	printf("OSS got message from child: %d\n", ossBuf.interrupt);
+
+/*
 	// Main loop
 	while (1) {
 
@@ -292,16 +349,13 @@ int main(int argc, char **argv) {
 			break;
 		}
 	}
-	
-	// If all slave process didn't already exit
-	if (waitpid(-1, NULL, WNOHANG) != -1) {
-		for (i = 0; i < spawns; i++) {
-			kill(childPids[i], SIGABRT);
-		}
-		while (wait(NULL) > 0);
-		printf("OSS exiting...\n");
-	}
+*/	
+
+	abortAll(childPids, spawns);
 
 	cleanUp();
+
+	printf("OSS exiting...\n");
+
 	return 0;
 }

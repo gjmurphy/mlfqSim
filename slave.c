@@ -17,34 +17,29 @@
 #include <sys/msg.h>
 
 // Global vars, need to be global for signal handling purposes
-int *g_shs;
-int *g_shn;
-int *g_pcb;
+struct stime_t *g_stm;
+struct pcb_t *g_pcb;
 int g_mschId;
 int g_mossId;
-
-int detachSegment(int *shp) {
-	// Detach from segment
-	if (shmdt(shp) == -1) {
-		perror("Detatch shared memory failed in Slave");
-		return 0;
-	}
-
-	return 1;
-}
 
 /**
 * Detaches from shared mem
 * *Must* be called before any exit of process
 */
 void cleanUp() {
-	int success;
+	int success = 1;
 
-	success = detachSegment(g_shs);
+	// Detach from segment
+	if (shmdt(g_stm) == -1) {
+		perror("Detatch shared memory failed in Slave");
+		success = 0;
+	}
 
-	success = detachSegment(g_shn);
-
-	success = detachSegment(g_pcb);
+	// Detach from pcb array
+	if (shmdt(g_pcb) == -1) {
+		perror("Detatch shared memory failed in Slave");
+		success = 0;
+	}
 
 
 	// Not all segments detatched successfully
@@ -53,34 +48,41 @@ void cleanUp() {
 	}
 }
 
-void createSegment(int **shp, key_t key, size_t size) {
+/**
+* Attaches to the memory segments for seconds and nanoseconds
+* created in OSS.
+*/
+void attachMemory(int numProc) {
+	int pcbId;
 	int id;
 
 	// Allocate segment of shared memory
-	if ((id = shmget(key, size, 0660)) < 0) {
+	if ((id = shmget(STM_KEY, sizeof(struct stime_t), 0660)) < 0) {
 		perror("Allocating shared memory failed in Slave");
 		cleanUp();
 		exit(EXIT_FAILURE);
 	}
 
 	// Attach shm to segment for access
-	if ((*shp = shmat(id, NULL, 0)) == (int*) -1) {
+	if ((g_stm = shmat(id, NULL, 0)) == (struct stime_t*) -1) {
 		perror("Attach shared memory failed in Slave");
 		cleanUp();
 		exit(EXIT_FAILURE);
-	}	
-}
-
-/**
-* Attaches to the memory segments for seconds and nanoseconds
-* created in OSS.
-*/
-void attachMemory(int numProc) {
-	createSegment(&g_shs, SHS_KEY, sizeof(int));
-
-	createSegment(&g_shn, SHN_KEY, sizeof(int));
+	}
 	
-	createSegment(&g_pcb, PCB_KEY, sizeof(struct pcb_type) * numProc);
+	// Find segment of shared memory for pcb array
+	if ((pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * numProc, 0660)) < 0) {
+		perror("Allocating shared memory failed in Slave");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
+
+	// Attach pcb pointer to segment for access
+	if ((g_pcb = shmat(pcbId, NULL, 0)) == (struct pcb_t*) -1) {
+		perror("Attach shared memory failed in Slave");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
 
 	// Find message queue for sending messages to OSS
 	if ((g_mschId = msgget(SCH_KEY, 0666)) < 0) {
@@ -109,20 +111,21 @@ void sigHandler(int sig) {
 		perror("Failed to block signals");
 	}
 	
-	// Master sent abort signal
+	// OSS sent abort signal
 	if (sig == SIGABRT) {
-		fprintf(stderr, "Child %d was aborted, exiting...\n", getpid());
+		fprintf(stderr, "Slave %d was aborted, exiting...\n", getpid());
 		cleanUp();
 		exit(EXIT_SUCCESS);
 	}
 
 	// Received interrupt signal
 	if (sig == SIGINT) {
-		fprintf(stderr, "Child %d was interupted, exiting...\n", getpid());
+		fprintf(stderr, "Slave %d was interupted, exiting...\n", getpid());
 	}
 	else {
-		fprintf(stderr, "Child %d unknown signal %d, exiting...\n", getpid(), sig);
+		fprintf(stderr, "Slave %d unknown signal %d, exiting...\n", getpid(), sig);
 	}
+
 	cleanUp();
 	exit(EXIT_FAILURE);	
 }
@@ -134,6 +137,7 @@ int main(int argc, char **argv) {
 	struct sigaction sa;
 	struct sch_msgbuf schBuf;
 	struct oss_msgbuf ossBuf;
+	struct pcb_t *pcb;
 
 	pcbIndex = strtol(argv[0], NULL, 10);
 	spawns = strtol(argv[1], NULL, 10);
@@ -145,23 +149,63 @@ int main(int argc, char **argv) {
   	sa.sa_flags = 0;
 	
 	if (sigaction(SIGINT, &sa, NULL) == -1) {
-        perror("Error: cannot handle SIGINT");
+        perror("Error: Slave cannot handle SIGINT");
 		exit(EXIT_FAILURE);
 	}
 	
 	if (sigaction(SIGABRT, &sa, NULL) == -1) {
-        perror("Error: cannot handle SIGINT");
+        perror("Error: Slave cannot handle SIGABRT");
 		exit(EXIT_FAILURE);
 	}
 
 	// Attach to shared memory
 	attachMemory(spawns);
 
+	pcb = &g_pcb[pcbIndex];
+
 	// Seed random, changing seed based on pid
 	srand(time(NULL) ^ (getpid() << 16));
 
+	while (1) {
+		// Wait to be scheduled by OSS
+		if (msgrcv(g_mschId, &schBuf, sizeof(struct sch_msgbuf), pcb->id, 0) == -1){
+			perror("Slave failed to receive scheduler message");
+			cleanUp();
+			exit(EXIT_FAILURE);
+		}
+
+		printf("Slave %d scheduled\n", pcb->id);		
+
+		ossBuf.mtype = 1;
+		ossBuf.index = pcbIndex;
+
+		quantum = schBuf.quantum;
+
+		if (quantum > pcb->burst_needed) {
+			quantum = pcb->burst_needed; 
+		}
+
+		ossBuf.interrupt = rand() % 2;
+
+		if (ossBuf.interrupt) {
+			quantum = rand() % (quantum + 1);
+		}
+		
+		if (quantum == pcb->burst_needed) {
+			pcb->burst_needed = 0;
+			ossBuf.finished = 1;
+		}
+
+		// If not end time, pass lock back to message queue
+		if (msgsnd(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 0) == -1) {
+			perror("Slave failed to send oss messege");
+			cleanUp();
+			exit(EXIT_FAILURE);
+		}
+	}
 	
 
 	cleanUp();
+
 	exit(EXIT_SUCCESS);
 }

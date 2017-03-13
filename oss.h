@@ -10,9 +10,14 @@
 #ifndef OSS_H
 #define OSS_H
 
+// Default values of preferences
+#define DFLT_SPAWNS 1
+#define DFLT_RWAIT 2
+#define DFLT_SWAIT 2
+#define DFLT_FILEN "test.out"
+
 // Hard coded keys for shared mem segments
-#define SHS_KEY 4220
-#define SHN_KEY 4480
+#define STM_KEY 4220
 #define PCB_KEY 5300
 
 // Hard coded keys for message queues
@@ -20,15 +25,22 @@
 #define OSS_KEY 7762
 
 // Number of nanoseconds in second
-#define NS_PER_S 1000000000
+#define NS_PER_S 1000000
 
-struct pcb_type {
+struct stime_t {
+	int sec;
+	int nnsec;
+};
+
+struct pcb_t {
+	int id;
 	int priority;
-	int time_created;
-	int time_ended;
+	struct stime_t time_created;
+	struct stime_t time_ended;
 	int time_waiting;
-	int cpu_time;
-	int burst_time;
+	int time_cpu;
+
+	int burst_needed;
 	int last_burst;
 };
 
@@ -41,7 +53,9 @@ struct sch_msgbuf {
 // Struct for sending messages between Slave's to handle mutual exclusion
 struct oss_msgbuf {
 	long mtype;
-	int time_used;
+	int index;
+	short interrupt;
+	short finished;
 };
 
 #endif
