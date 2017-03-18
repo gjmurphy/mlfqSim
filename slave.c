@@ -177,6 +177,7 @@ int main(int argc, char **argv) {
 		printf("Slave %d scheduled\n", pcb->id);		
 
 		ossBuf.mtype = 1;
+		ossBuf.finished = 0;
 		ossBuf.index = pcbIndex;
 
 		quantum = schBuf.quantum;
@@ -191,9 +192,13 @@ int main(int argc, char **argv) {
 			quantum = rand() % (quantum + 1);
 		}
 		
-		if (quantum == pcb->burst_needed) {
-			pcb->burst_needed = 0;
+		pcb->burst_needed -= quantum;
+		pcb->last_burst = quantum;
+		pcb->time_cpu += quantum;
+
+		if (pcb->burst_needed == 0) {
 			ossBuf.finished = 1;
+			break;
 		}
 
 		// If not end time, pass lock back to message queue
@@ -204,6 +209,12 @@ int main(int argc, char **argv) {
 		}
 	}
 	
+	// If not end time, pass lock back to message queue
+	if (msgsnd(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), IPC_NOWAIT) == -1) {
+		perror("Slave failed to send oss messege");
+		cleanUp();
+		exit(EXIT_FAILURE);
+	}
 
 	cleanUp();
 

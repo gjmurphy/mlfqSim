@@ -6,7 +6,6 @@
 * Summary: 
 */
 #include "oss.h"
-#include "osutil.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +83,9 @@ void cleanUp() {
 /**
 * Uses setupSegment function to allocate the needed memory segments
 */
-void setupMemory(int numProc) {
+void setupMemory(int spawns) {
+	int i;
+
 	// Allocate segment of shared memory
 	if ((g_stmId = shmget(STM_KEY, sizeof(struct stime_t), IPC_CREAT | 0660)) < 0) {
 		perror("Allocating shared memory failed in OSS");
@@ -100,7 +101,7 @@ void setupMemory(int numProc) {
 	}
 	
 	// Allocate segment of shared memory for pcb array
-	if ((g_pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * numProc, IPC_CREAT | 0660)) < 0) {
+	if ((g_pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * spawns, IPC_CREAT | 0660)) < 0) {
 		perror("Allocating shared memory failed in OSS");
 		cleanUp();
 		exit(EXIT_FAILURE);
@@ -114,10 +115,14 @@ void setupMemory(int numProc) {
 	}
 
 	// Initialize shared seconds to 0
-	(*g_stm).sec = 0;
+	g_stm->sec = 0;
 
 	// Initialize shared nanoseconds to 0
-	(*g_stm).nnsec = 0;
+	g_stm->nnsec = 0;
+
+	for (i = 0; i < spawns; i++) {
+		g_pcb[i].id = -1;
+	}
 
 	// Create message queue used for child processes critical section lock
 	if ((g_mschId = msgget(SCH_KEY, IPC_CREAT | 0666)) < 0) {
@@ -134,16 +139,6 @@ void setupMemory(int numProc) {
 	}
 }
 
-void abortAll(pid_t *childPids, int spawns) {
-	int i;
-
-	for (i = 0; i < spawns; i++) {
-		kill(childPids[i], SIGABRT);
-	}
-
-	while (wait(NULL) > 0);
-}
-
 /**
 * Handles SIGINT ^C, waits for children then cleans up exits
 */
@@ -158,27 +153,35 @@ void sigHandler(int sig) {
 	}
 }
 
-void generateChild(pid_t *childPids, int spawns, int index) {
-	if (childPids[index] != -1) {
-		kill(childPids[index], SIGABRT);
-		waitpid(childPids[index], NULL, 0);
+void abortAll(int spawns) {
+	int i;
+
+	for (i = 0; i < spawns; i++) {
+		if (g_pcb[i].id != -1) {
+			kill(g_pcb[i].id, SIGABRT);
+		}
+	}
+
+	while (wait(NULL) > 0);
+}
+
+void generateChild(int spawns, int index) {
+	if (g_pcb[index].id != -1) {
+		waitpid(g_pcb[index].id, NULL, 0);
 	}
 
 	struct pcb_t pcb;
 	struct stime_t endTemp = {-1, -1};
 	pid_t thisPid;
 
-	pcb.id = index + 1;
 	pcb.priority = 1;
 	pcb.time_created = *g_stm;
 	pcb.time_ended = endTemp;
 	pcb.time_waiting = 0;
 	pcb.time_cpu = 0;
 
-	pcb.burst_needed = rand() % 5000 + 1000;
+	pcb.burst_needed = rand() % 4000 + 1000;
 	pcb.last_burst = 0;
-
-	g_pcb[index] = pcb;
 
 	thisPid = fork();
 
@@ -198,18 +201,22 @@ void generateChild(pid_t *childPids, int spawns, int index) {
 	}
 	// Parent
 	else {
-		childPids[0] = thisPid;
+		pcb.id = thisPid;
 	}
+
+	g_pcb[index] = pcb;
 }
 
-void incrementTime(int delta) {
-	g_stm->nnsec += delta;
+/**
+* Returns the time in nanoseconds since epoch
+*/
+long long realTimeSinceEpoch() {
+	struct timespec timeSpec;
 
-	// Once full second has been reached, increment sim time second and reset ns
-	if (g_stm->nnsec == NS_PER_S) {
-		g_stm->sec++;
-		g_stm->nnsec = 0;
-	}	
+	clock_gettime(CLOCK_REALTIME, &timeSpec);
+
+	// timespec has two fields that must be combined to get full nanoseconds
+	return ((long long) timeSpec.tv_sec * 1000000000L + (long long) timeSpec.tv_nsec);
 }
 
 /**
@@ -222,8 +229,7 @@ int main(int argc, char **argv) {
 			"-h: displays this help message\n"
 			"-s [integer]: number of child processes spawned (max 18)\n"
 			"-t [integer]: number of seconds OSS will wait\n"
-			"-l [filename]: name of file where log will be written\n"
-			"-c [integer]: amount sim time will be incremented (try 10 or 100 etc.)\n";
+			"-l [filename]: name of file where log will be written\n";
 	int c = 0;
 	
 	// preference variables
@@ -233,14 +239,22 @@ int main(int argc, char **argv) {
 	char *filename = DFLT_FILEN;
 
 	// process variables
-	pid_t *childPids;
-	long long realEndTime;
-	
 	int i = 0;
 	int j = 0;
+	
+	struct stime_t spawnTime = {0, 0};
+
 	int lineCount = 1;
+	int cpuIdleTime = 0;
+	int totalWaitTime = 0;
+	int totalProcesses = 0;
+
+	short *pcbVector;
+
+	long long realEndTime;
 
 	struct sigaction sa;
+
 	struct oss_msgbuf ossBuf;
 	struct sch_msgbuf schBuf;
 
@@ -287,14 +301,14 @@ int main(int argc, char **argv) {
 	// Allocate and init shared memory
 	setupMemory(spawns);
 
-	// Allocate memory for array to store all children pids	
-	if ((childPids = calloc(1, sizeof(pid_t) * spawns)) == NULL) {
-		perror("Failed to allocate memory for pid array");
+	// Allocate memory for array used to denote which pcb is free	
+	if ((pcbVector = calloc(1, sizeof(short) * spawns)) == NULL) {
+		perror("Failed to allocate memory for pcbVector array");
 		cleanUp();
 		return 1;
 	}
 
-	memset(childPids, -1, spawns);
+	memset(pcbVector, 0, spawns);
 
 	// Attempt to open file in append mode
 	if ((g_output = fopen(filename, "a")) == NULL) {
@@ -307,51 +321,85 @@ int main(int argc, char **argv) {
 	fputs("***LOG ENTRY BEGIN***\n", g_output);
 
 	// The real time in nanoseconds that OSS should terminate if hasn't already finished
-	realEndTime = nsSinceEpoch() + (waitReal * ((long long) NS_PER_S));
+	realEndTime = realTimeSinceEpoch() + (waitReal * ((long long) NS_PER_S));
 
 	srand(time(NULL));
 
-	generateChild(childPids, spawns, 0);
-	
-	schBuf.mtype = g_pcb[0].id;
-	schBuf.quantum = 700;
-
-
-	if (msgsnd(g_mschId, &schBuf, sizeof(struct sch_msgbuf), 0) == -1) {
-			perror("OSS failed to send sch messege");
-			cleanUp();
-			exit(EXIT_FAILURE);
-	}
-
-	if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
-			perror("OSS failed to receive return message");
-			cleanUp();
-			exit(EXIT_FAILURE);
-	}
-
-
-	printf("OSS got message from child: %d\n", ossBuf.interrupt);
-
-/*
 	// Main loop
 	while (1) {
+		int pcbIndex = -1;
+		int workTime = rand() % 1001;
 
-		// Once full second has been reached, increment sim time second and reset ns
-		if (*g_shn == NS_PER_S) {
-			*g_shs += 1;
-			*g_shn = 0;
+		if (gte(g_stm, &spawnTime)) {
+			int tempIndex = -1;
+
+			for (i = 0; i < spawns; i++) {
+				if (!pcbVector[i]) {
+					tempIndex = i;
+				}
+			}
+
+			if (tempIndex != -1) {
+				generateChild(spawns, tempIndex);
+				pcbVector[tempIndex] = 1;
+			}
+
+			spawnTime = *g_stm;
+			incrementTime(&spawnTime, rand() % (NS_PER_S * 2));
 		}
 
+		// Iterate system time 
+		incrementTime(g_stm, workTime);		
+
+		if (pcbIndex != -1) {
+			schBuf.mtype = g_pcb[pcbIndex].id;
+			schBuf.quantum = 200;
+
+			if (msgsnd(g_mschId, &schBuf, sizeof(struct sch_msgbuf), 0) == -1) {
+					perror("OSS failed to send sch messege");
+					cleanUp();
+					exit(EXIT_FAILURE);
+			}
+
+			if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
+					perror("OSS failed to receive return message");
+					cleanUp();
+					exit(EXIT_FAILURE);
+			}
+
+			incrementTime(g_stm, g_pcb[pcbIndex].last_burst);
+
+			if (ossBuf.finished) {
+				
+			}
+
+			printf("OSS got message from child: %d\n", ossBuf.interrupt);
+			printf("%d %d\n", g_pcb[pcbIndex].burst_needed, g_pcb[pcbIndex].last_burst);
+		}
+		else {
+			cpuIdleTime += workTime;
+		}
+
+		// Check if OSS has spawned the max number of children
+		if (totalProcesses >= 100) {
+			printf("OSS has spawned 100 children, exiting\n");
+			break;
+		}
+
+		// Check for simulated system time reaching end point
+		if (g_stm->sec >= waitSim) {
+			printf("Simulated time ended %d.%d\n", g_stm->sec, g_stm->nnsec);
+			break;
+		}
 
 		// Check for real system time reaching end point
-		if (nsSinceEpoch() >= realEndTime) {
+		if (realTimeSinceEpoch() >= realEndTime) {
 			printf("Real time ended\n");
 			break;
 		}
-	}
-*/	
+	}	
 
-	abortAll(childPids, spawns);
+	abortAll(spawns);
 
 	cleanUp();
 

@@ -10,8 +10,10 @@
 #ifndef OSS_H
 #define OSS_H
 
+#include "stime.h"
+
 // Default values of preferences
-#define DFLT_SPAWNS 1
+#define DFLT_SPAWNS 5
 #define DFLT_RWAIT 2
 #define DFLT_SWAIT 2
 #define DFLT_FILEN "test.out"
@@ -25,12 +27,7 @@
 #define OSS_KEY 7762
 
 // Number of nanoseconds in second
-#define NS_PER_S 1000000
-
-struct stime_t {
-	int sec;
-	int nnsec;
-};
+#define NS_PER_S 1000000000
 
 struct pcb_t {
 	int id;
@@ -39,7 +36,6 @@ struct pcb_t {
 	struct stime_t time_ended;
 	int time_waiting;
 	int time_cpu;
-
 	int burst_needed;
 	int last_burst;
 };
