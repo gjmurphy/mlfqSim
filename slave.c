@@ -172,10 +172,7 @@ int main(int argc, char **argv) {
 			perror("Slave failed to receive scheduler message");
 			cleanUp();
 			exit(EXIT_FAILURE);
-		}
-
-		printf("Slave %d scheduled\n", pcb->id);		
-
+		}		
 		ossBuf.mtype = 1;
 		ossBuf.finished = 0;
 		ossBuf.index = pcbIndex;
@@ -194,7 +191,6 @@ int main(int argc, char **argv) {
 		
 		pcb->burst_needed -= quantum;
 		pcb->last_burst = quantum;
-		pcb->time_cpu += quantum;
 
 		if (pcb->burst_needed == 0) {
 			ossBuf.finished = 1;

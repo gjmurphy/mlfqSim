@@ -2,7 +2,7 @@ CC     = gcc
 CFLAGS = -g
 TARGET1 = OSS
 TARGET2 = Slave
-OBJS1   = oss.o stime.o
+OBJS1   = oss.o stime.o queue.o
 OBJS2   = slave.o
 
 all: $(TARGET1) $(TARGET2)
@@ -15,6 +15,9 @@ oss.o: oss.c
 
 stime.o: stime.c
 	$(CC) $(CFLAGS) -c stime.c
+
+queue.o: queue.c
+	$(CC) $(CFLAGS) -c queue.c
 
 $(TARGET2): $(OBJS2)
 	$(CC) -o $(TARGET2) $(OBJS2)

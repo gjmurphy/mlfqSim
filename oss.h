@@ -13,10 +13,19 @@
 #include "stime.h"
 
 // Default values of preferences
-#define DFLT_SPAWNS 5
-#define DFLT_RWAIT 2
-#define DFLT_SWAIT 2
+#define DFLT_SPAWNS 18
+#define DFLT_RWAIT 20
+#define DFLT_SWAIT 20
 #define DFLT_FILEN "test.out"
+
+#define BURST_MAX 100000000
+#define BURST_MIN 50000000
+
+#define SPAWN_RT 1000000
+
+#define QUANT0 20000
+#define QUANT1 40000
+#define QUANT2 80000
 
 // Hard coded keys for shared mem segments
 #define STM_KEY 4220
@@ -26,16 +35,9 @@
 #define SCH_KEY 6520
 #define OSS_KEY 7762
 
-// Number of nanoseconds in second
-#define NS_PER_S 1000000000
-
 struct pcb_t {
 	int id;
 	int priority;
-	struct stime_t time_created;
-	struct stime_t time_ended;
-	int time_waiting;
-	int time_cpu;
 	int burst_needed;
 	int last_burst;
 };
