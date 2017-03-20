@@ -18,14 +18,20 @@
 #define DFLT_SWAIT 20
 #define DFLT_FILEN "test.out"
 
+// The range of the burst needed by each generated child process
 #define BURST_MAX 100000000
-#define BURST_MIN 50000000
+#define BURST_MIN 20000000
 
-#define SPAWN_RT 1000000
+// The time in nanoseconds between each potential child spawn
+#define SPAWN_RT 100000000
 
-#define QUANT0 20000
-#define QUANT1 40000
-#define QUANT2 80000
+// Three quantums of the queues
+#define QUANT0 200000
+#define QUANT1 400000
+#define QUANT2 800000
+
+// Range from 0 to this, how much time the cpu will take scheduling
+#define CPU_LOAD 1001
 
 // Hard coded keys for shared mem segments
 #define STM_KEY 4220
@@ -35,11 +41,14 @@
 #define SCH_KEY 6520
 #define OSS_KEY 7762
 
+// Struct used for the shared array of pcbs in OSS
 struct pcb_t {
 	int id;
 	int priority;
 	int burst_needed;
 	int last_burst;
+	long wait_time;
+	stime_t start_time;
 };
 
 // Struct for sending message to Slave when it has been scheduled 
@@ -48,7 +57,7 @@ struct sch_msgbuf {
 	int quantum;
 };
 
-// Struct for sending messages between Slave's to handle mutual exclusion
+// Struct for Slave sending message back to OSS when it is finished
 struct oss_msgbuf {
 	long mtype;
 	int index;

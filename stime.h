@@ -1,3 +1,10 @@
+/**
+* stime.h
+* Project 4 4760-E01
+* Author: Gabriel Murphy (gjmcn6)
+* Date: Mon Mar 20 STD 2017
+* Summary: struct and helper functions used for simulated system time
+*/
 #ifndef S_TIME
 #define S_TIME
 

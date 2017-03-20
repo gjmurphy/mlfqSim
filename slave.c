@@ -130,10 +130,14 @@ void sigHandler(int sig) {
 	exit(EXIT_FAILURE);	
 }
 
+/**
+* Main function
+*/
 int main(int argc, char **argv) {
 	int pcbIndex;
 	int spawns;
 	int quantum;
+	int msgId = getpid();
 	struct sigaction sa;
 	struct sch_msgbuf schBuf;
 	struct oss_msgbuf ossBuf;
@@ -161,37 +165,45 @@ int main(int argc, char **argv) {
 	// Attach to shared memory
 	attachMemory(spawns);
 
+	// Reference to this prcoesses pcb in shared memory
 	pcb = &g_pcb[pcbIndex];
 
 	// Seed random, changing seed based on pid
 	srand(time(NULL) ^ (getpid() << 16));
 
 	while (1) {
-		// Wait to be scheduled by OSS
-		if (msgrcv(g_mschId, &schBuf, sizeof(struct sch_msgbuf), pcb->id, 0) == -1){
+		// Wait to be scheduled by OSS -- message type is our pid
+		if (msgrcv(g_mschId, &schBuf, sizeof(struct sch_msgbuf), msgId, 0) == -1){
 			perror("Slave failed to receive scheduler message");
 			cleanUp();
 			exit(EXIT_FAILURE);
-		}		
+		}
+
 		ossBuf.mtype = 1;
 		ossBuf.finished = 0;
 		ossBuf.index = pcbIndex;
 
 		quantum = schBuf.quantum;
 
+		// Check if allowed quantum is greater than what time process still needs
 		if (quantum > pcb->burst_needed) {
 			quantum = pcb->burst_needed; 
 		}
 
-		ossBuf.interrupt = rand() % 2;
+		// Probability of an interrupt 20%
+		int probability = rand() % 100 + 1;
+
+		ossBuf.interrupt = (probability > 80 ? 1 : 0);
 
 		if (ossBuf.interrupt) {
 			quantum = rand() % (quantum + 1);
 		}
 		
+		// Adjust burst left after this quantum
 		pcb->burst_needed -= quantum;
 		pcb->last_burst = quantum;
 
+		// Check for completion
 		if (pcb->burst_needed == 0) {
 			ossBuf.finished = 1;
 			break;
@@ -205,7 +217,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	
-	// If not end time, pass lock back to message queue
+	// Send final message back to OSS -- no blocked waiting, just send and gtfo
 	if (msgsnd(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), IPC_NOWAIT) == -1) {
 		perror("Slave failed to send oss messege");
 		cleanUp();
