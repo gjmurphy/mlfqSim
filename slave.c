@@ -137,6 +137,8 @@ int main(int argc, char **argv) {
 	int pcbIndex;
 	int spawns;
 	int quantum;
+	int interruptProb;
+	int terminateProb;
 	int msgId = getpid();
 	struct sigaction sa;
 	struct sch_msgbuf schBuf;
@@ -145,6 +147,8 @@ int main(int argc, char **argv) {
 
 	pcbIndex = strtol(argv[0], NULL, 10);
 	spawns = strtol(argv[1], NULL, 10);
+	interruptProb = strtol(argv[2], NULL, 10);
+	terminateProb = strtol(argv[3], NULL, 10);
 
 	// Setup signal handlers
 
@@ -181,35 +185,28 @@ int main(int argc, char **argv) {
 
 		ossBuf.mtype = 1;
 		ossBuf.finished = 0;
+		ossBuf.interrupt = 0;
 		ossBuf.index = pcbIndex;
 
 		quantum = schBuf.quantum;
 
-		// Check if allowed quantum is greater than what time process still needs
-		if (quantum > pcb->burst_needed) {
-			quantum = pcb->burst_needed; 
-		}
-
-		// Probability of an interrupt 20%
-		int probability = rand() % 100 + 1;
-
-		ossBuf.interrupt = (probability > 80 ? 1 : 0);
-
-		if (ossBuf.interrupt) {
+		// Check for termination
+		if ((rand() % terminateProb + 1) == terminateProb) {
 			quantum = rand() % (quantum + 1);
-		}
-		
-		// Adjust burst left after this quantum
-		pcb->burst_needed -= quantum;
-		pcb->last_burst = quantum;
-
-		// Check for completion
-		if (pcb->burst_needed == 0) {
+			pcb->last_burst = quantum;
 			ossBuf.finished = 1;
 			break;
 		}
 
-		// If not end time, pass lock back to message queue
+		// Check for interrupt
+		if ((rand() % interruptProb + 1) == interruptProb) {
+			quantum = rand() % (quantum + 1);
+			ossBuf.interrupt = 1;
+		}
+
+		pcb->last_burst = quantum;
+
+		// If not termination, pass lock back to message queue
 		if (msgsnd(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 0) == -1) {
 			perror("Slave failed to send oss messege");
 			cleanUp();

@@ -1,7 +1,18 @@
+/**
+* queue.c
+* Project 4 4760-E01
+* Author: Gabriel Murphy (gjmcn6)
+* Date: Mon Mar 20 STD 2017
+* Summary: Implementation of functions for queue
+*/
 #include "queue.h"
 #include <stdlib.h>
 #include <stdio.h>
 
+
+/**
+* Pushes a new node to back of queue
+*/
 void push(queue_t *queue, int index) {
 	node_t *newNode;
 
@@ -13,6 +24,7 @@ void push(queue_t *queue, int index) {
 	newNode->next = NULL;
 	newNode->index = index;
 
+	// If queue is empty, set head to new node
 	if (queue->head == NULL) {
 		queue->head = newNode;
 	}
@@ -25,6 +37,9 @@ void push(queue_t *queue, int index) {
 	queue->size++;
 }
 
+/**
+* Removes first node of queue and returns the element 
+*/
 int pop(queue_t *queue) {
 	node_t *node = queue->head;
 	int index = node->index;
@@ -38,6 +53,10 @@ int pop(queue_t *queue) {
 	return index;
 }
 
+/**
+* Prints the contents of the queue
+* Really only used during debugging 
+*/
 void printQueue(queue_t *queue) {
 	node_t *node = queue->head;
 
@@ -53,6 +72,9 @@ void printQueue(queue_t *queue) {
 	}
 }
 
+/**
+* Initializes a new empty queue
+*/
 queue_t createQueue() {
 	queue_t queue = {NULL, NULL, 0};
 

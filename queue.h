@@ -1,3 +1,10 @@
+/**
+* queue.h
+* Project 4 4760-E01
+* Author: Gabriel Murphy (gjmcn6)
+* Date: Mon Mar 20 STD 2017
+* Summary: Definitions of the structs used for a queue
+*/
 #ifndef QUEUE
 #define QUEUE
 

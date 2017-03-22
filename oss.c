@@ -172,7 +172,7 @@ void abortAll(int spawns) {
 /**
 * Creates a new pcb entry and forks/execs new process
 */
-void generateChild(int spawns, int index) {
+void generateChild(int spawns, int index, int intProb, int termProb) {
 	struct pcb_t pcb;
 	pid_t thisPid;
 
@@ -184,8 +184,6 @@ void generateChild(int spawns, int index) {
 	// Setup pcb values
 
 	pcb.start_time = *g_stime;
-	// Randomize how much cpu time process needs to complete
-	pcb.burst_needed = (rand() % (BURST_MAX - BURST_MIN)) + BURST_MIN;
 	// TODO make priority randomized
 	pcb.priority = 0;
 	pcb.last_burst = 0;
@@ -200,13 +198,17 @@ void generateChild(int spawns, int index) {
 	// Child 
 	if (thisPid == 0) {
 		// index in the pcb array is sent to Slave
-		char indexArg[4];
-		char spawnArg[4];
-		snprintf(indexArg, 4, "%d", index);
-		snprintf(spawnArg, 4, "%d", spawns);
+		char indexArg[8];
+		char spawnArg[8];
+		char intProbArg[8];
+		char termProbArg[8];
+		snprintf(indexArg, 8, "%d", index);
+		snprintf(spawnArg, 8, "%d", spawns);
+		snprintf(intProbArg, 8, "%d", intProb);
+		snprintf(termProbArg, 8, "%d", termProb);
 
 		// Exec Slave from child process
-		execl("./Slave", indexArg, spawnArg, NULL);
+		execl("./Slave", indexArg, spawnArg, intProbArg, termProbArg, NULL);
 
 		// Should never reach here
 		perror("Failed to execute Slave");
@@ -241,6 +243,30 @@ long long realTimeSinceEpoch() {
 	return ((long long) timeSpec.tv_sec * 1000000000L + (long long) timeSpec.tv_nsec);
 }
 
+void readPreferences(int *prefs) {
+	FILE *file;
+	char *filename = "pref.dat";
+	int count = 0;
+	int i = 0;
+	char buff[128];
+
+	if ((file = fopen(filename, "r")) == NULL) {
+		perror("Failed to open pref file in OSS");
+		exit(EXIT_FAILURE);
+	}
+
+	while (fgets(buff, sizeof(buff), file) != NULL) {
+		if ((count % 2) != 0) {
+			prefs[i] = strtol(buff, NULL, 10);
+			i++;
+		}
+
+		count++;
+	}
+
+	fclose(file);
+}
+
 /**
 * Main function
 */
@@ -253,13 +279,19 @@ int main(int argc, char **argv) {
 			"-t [integer]: number of seconds OSS will wait\n"
 			"-l [filename]: name of file where log will be written\n";
 	int c = 0;
-	
+
+	// Read preferences from file
+	int prefs[10];
+	readPreferences(prefs);
+
 	// preference variables
-	int spawns = DFLT_SPAWNS;
-	int waitReal = DFLT_RWAIT;
-	int waitSim = DFLT_SWAIT;
 	char *filename = DFLT_FILEN;
-	int quantums[3] = {QUANT0, QUANT1, QUANT2};
+	int spawns = prefs[0];
+	int waitReal = prefs[1];
+	int waitSim = prefs[2];
+	int spawnRate = prefs[3];
+	int quantums[3] = {prefs[4], prefs[5], prefs[6]};
+	int workMax = prefs[7]; 
 
 	// process variables
 	int i = 0;
@@ -379,7 +411,7 @@ int main(int argc, char **argv) {
 
 			// Generate new child process if a free pcb was found
 			if (tempIndex != -1) {
-				generateChild(spawns, tempIndex);
+				generateChild(spawns, tempIndex, prefs[8], prefs[9]);
 
 				// Set pcb as used in pcbVector
 				pcbVector[tempIndex] = 1;
@@ -448,6 +480,9 @@ int main(int argc, char **argv) {
 					workTime);
 			writeToLog(logBuff, &lineCount);
 
+			// Increment the time it took cpu to schedule
+			incrementTime(&cpuIdleTime, workTime);
+
 			// Wait for return message from child process
 			if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
 					perror("OSS failed to receive return message");
@@ -495,7 +530,8 @@ int main(int argc, char **argv) {
 				if (ossBuf.interrupt) {
 					priority = 0;
 
-					snprintf(logBuff, 128, "OSS: Not using its entire quantum\n");
+					snprintf(logBuff, 128, "|| OSS: Not using its entire quantum\n");
+
 					writeToLog(logBuff, &lineCount);
 				}
 				// Otherwise reduce by 1 (unless already at priority 2)
@@ -512,10 +548,6 @@ int main(int argc, char **argv) {
 				// Update pcb
 				g_pcb[pcbIndex].priority = priority;
 			}
-		}
-		// No child process scheduled, add workTime to idle time
-		else {
-			incrementTime(&cpuIdleTime, workTime);
 		}
 
 		// Check if OSS has spawned the max number of children

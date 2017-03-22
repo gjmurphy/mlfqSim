@@ -5,7 +5,7 @@
 * Date: Mon Mar 20 STD 2017
 * Summary: Contains definitions shared between OSS and Slave
 * and also the structs of the message buffers used in the two
-* message queues
+* message queues and the pcb 
 */
 #ifndef OSS_H
 #define OSS_H
@@ -15,7 +15,7 @@
 // Default values of preferences
 #define DFLT_SPAWNS 18
 #define DFLT_RWAIT 20
-#define DFLT_SWAIT 20
+#define DFLT_SWAIT 2
 #define DFLT_FILEN "test.out"
 
 // The range of the burst needed by each generated child process
@@ -23,12 +23,12 @@
 #define BURST_MIN 20000000
 
 // The time in nanoseconds between each potential child spawn
-#define SPAWN_RT 100000000
+#define SPAWN_RT 10000000
 
 // Three quantums of the queues
-#define QUANT0 200000
-#define QUANT1 400000
-#define QUANT2 800000
+#define QUANT0 2000000
+#define QUANT1 4000000
+#define QUANT2 8000000
 
 // Range from 0 to this, how much time the cpu will take scheduling
 #define CPU_LOAD 1001
@@ -45,7 +45,6 @@
 struct pcb_t {
 	int id;
 	int priority;
-	int burst_needed;
 	int last_burst;
 	long wait_time;
 	stime_t start_time;
