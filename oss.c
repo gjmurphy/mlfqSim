@@ -18,6 +18,8 @@
 #include <sys/wait.h>
 #include <sys/msg.h>
 
+#define DFLT_FILEN "test.out"
+
 // Global vars, need to be global for signal handling purposes
 stime_t *g_stime;
 int g_stimeId;
@@ -175,6 +177,7 @@ void abortAll(int spawns) {
 void generateChild(int spawns, int index, int intProb, int termProb) {
 	struct pcb_t pcb;
 	pid_t thisPid;
+	int priorityProb;
 
 	// Make sure previous child in this pcb has fully terminated
 	if (g_pcb[index].id != -1) {
@@ -183,9 +186,28 @@ void generateChild(int spawns, int index, int intProb, int termProb) {
 
 	// Setup pcb values
 
+
+
 	pcb.start_time = *g_stime;
-	// TODO make priority randomized
-	pcb.priority = 0;
+	
+	priorityProb = rand() % 100 + 1;
+
+	// Priority determines which queue is put in
+	// Randomly select initial priority (heavy bias towards 0) 
+
+	// 85% chance of queue 0
+	if (priorityProb <= 85) {
+		pcb.priority = 0;
+	}
+	// 10% chance of queue 1
+	else if (priorityProb > 85 && priorityProb <= 95) {
+		pcb.priority = 1;
+	}
+	// 5% chance of queue 2
+	else {
+		pcb.priority = 2;
+	}
+
 	pcb.last_burst = 0;
 	pcb.wait_time = 0;
 
@@ -223,8 +245,8 @@ void generateChild(int spawns, int index, int intProb, int termProb) {
 /**
 * Writes the given buffer to a file if linecount has not reached 1000
 */
-void writeToLog(char *buff, int *lineCount) {
-	if (*lineCount <= 1000) {
+void writeToLog(char *buff, int *lineCount, int maxLines) {
+	if (*lineCount <= maxLines) {
 		fputs(buff, g_output);
 		fflush(g_output);
 		(*lineCount)++;
@@ -243,6 +265,9 @@ long long realTimeSinceEpoch() {
 	return ((long long) timeSpec.tv_sec * 1000000000L + (long long) timeSpec.tv_nsec);
 }
 
+/**
+* Reads the preference variables from a file and adds them to an array
+*/
 void readPreferences(int *prefs) {
 	FILE *file;
 	char *filename = "pref.dat";
@@ -256,6 +281,7 @@ void readPreferences(int *prefs) {
 	}
 
 	while (fgets(buff, sizeof(buff), file) != NULL) {
+		// Numbers are every other line of file (others are descriptions)
 		if ((count % 2) != 0) {
 			prefs[i] = strtol(buff, NULL, 10);
 			i++;
@@ -281,7 +307,7 @@ int main(int argc, char **argv) {
 	int c = 0;
 
 	// Read preferences from file
-	int prefs[10];
+	int prefs[11];
 	readPreferences(prefs);
 
 	// preference variables
@@ -396,7 +422,7 @@ int main(int argc, char **argv) {
 	// Main loop
 	while (1) {
 		int pcbIndex = -1;
-		int workTime = rand() % CPU_LOAD;
+		int workTime = rand() % workMax;
 
 		// Spawn new child processes if time reached
 		if (gte(g_stime, &spawnTime)) {
@@ -423,16 +449,16 @@ int main(int argc, char **argv) {
 				
 				snprintf(logBuff, 128, "** OSS: Generating process with PID %d"
 					" and putting in queue %d at time %d.%d\n",
-					g_pcb[tempIndex].id, 0, g_stime->sec, g_stime->nnsec);
+					g_pcb[tempIndex].id, g_pcb[tempIndex].priority, g_stime->sec, g_stime->nnsec);
 
 				printf("%s", logBuff);
 
-				writeToLog(logBuff, &lineCount);
+				writeToLog(logBuff, &lineCount, prefs[10]);
 			}
 
 			// Generate new spawn time
 			spawnTime = *g_stime;
-			incrementTime(&spawnTime, rand() % SPAWN_RT);
+			incrementTime(&spawnTime, rand() % spawnRate);
 		}
 
 		// Add cpu work time to simulated system time  
@@ -467,7 +493,7 @@ int main(int argc, char **argv) {
 			snprintf(logBuff, 128, "OSS: Dispatching process with PID %d"
 				                    " from queue %d at time %d.%d\n",
 					g_pcb[pcbIndex].id, g_pcb[pcbIndex].priority, g_stime->sec, g_stime->nnsec);
-			writeToLog(logBuff, &lineCount);
+			writeToLog(logBuff, &lineCount, prefs[10]);
 
 			// Send message to child proccess (msg type is child pid) to schedule 
 			if (msgsnd(g_mschId, &schBuf, sizeof(struct sch_msgbuf), 0) == -1) {
@@ -476,12 +502,9 @@ int main(int argc, char **argv) {
 					exit(EXIT_FAILURE);
 			}
 
-			snprintf(logBuff, 128, "OSS: Total time this dispatch %d nanoseconds\n",
+			snprintf(logBuff, 128, "  OSS: Total time this dispatch %d nanoseconds\n",
 					workTime);
-			writeToLog(logBuff, &lineCount);
-
-			// Increment the time it took cpu to schedule
-			incrementTime(&cpuIdleTime, workTime);
+			writeToLog(logBuff, &lineCount, prefs[10]);
 
 			// Wait for return message from child process
 			if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
@@ -490,10 +513,10 @@ int main(int argc, char **argv) {
 					exit(EXIT_FAILURE);
 			}
 
-			snprintf(logBuff, 128, "OSS: Receiving that process with PID %d"
+			snprintf(logBuff, 128, "    OSS: Receiving that process with PID %d"
 					" ran for %d nanoseconds\n",
 					g_pcb[pcbIndex].id, g_pcb[pcbIndex].last_burst);
-			writeToLog(logBuff, &lineCount);
+			writeToLog(logBuff, &lineCount, prefs[10]);
 
 			// Increment system time to that of child's last burst
 			incrementTime(g_stime, g_pcb[pcbIndex].last_burst);
@@ -510,7 +533,7 @@ int main(int argc, char **argv) {
 				snprintf(logBuff, 128, "XX OSS: Process with PID %d finished at time %d.%d\n",
 					g_pcb[pcbIndex].id, g_stime->sec, g_stime->nnsec);
 				printf("%s", logBuff);
-				writeToLog(logBuff, &lineCount);
+				writeToLog(logBuff, &lineCount, prefs[10]);
 
 				// Subtract current time form start time and add it to total turnaround
 				incrementTime(&totalTurn, combined(g_stime) - combined(&g_pcb[pcbIndex].start_time));
@@ -530,24 +553,28 @@ int main(int argc, char **argv) {
 				if (ossBuf.interrupt) {
 					priority = 0;
 
-					snprintf(logBuff, 128, "|| OSS: Not using its entire quantum\n");
+					snprintf(logBuff, 128, "    OSS: Not using its entire quantum\n");
 
-					writeToLog(logBuff, &lineCount);
+					writeToLog(logBuff, &lineCount, prefs[10]);
 				}
 				// Otherwise reduce by 1 (unless already at priority 2)
 				else if (priority < 2) {
 					priority++;
 				}
 
-				snprintf(logBuff, 128, "OSS: Putting process with PID %d into queue %d\n",
+				snprintf(logBuff, 128, "      OSS: Putting process with PID %d into queue %d\n",
 					g_pcb[pcbIndex].id, priority);
-				writeToLog(logBuff, &lineCount);
+				writeToLog(logBuff, &lineCount, prefs[10]);
 
 				// Add to back of proper queue
 				push(&queues[priority], pcbIndex);
 				// Update pcb
 				g_pcb[pcbIndex].priority = priority;
 			}
+		}
+		// No process to schedule, so increment work time as idle
+		else {
+			incrementTime(&cpuIdleTime, workTime);
 		}
 
 		// Check if OSS has spawned the max number of children
@@ -580,8 +607,8 @@ int main(int argc, char **argv) {
 	}
 
 	printf("CPU Idle: %d.%d\n", cpuIdleTime.sec, cpuIdleTime.nnsec);
-	printf("Average Wait: %d.%d\n", averageWait.sec, averageWait.nnsec);
-	printf("Average Turnover: %d.%d\n", averageTurn.sec, averageTurn.nnsec);
+	printf("Average time waiting: %d.%d\n", averageWait.sec, averageWait.nnsec);
+	printf("Average turnover: %d.%d\n", averageTurn.sec, averageTurn.nnsec);
 	printf("OSS exiting...\n");
 
 	return 0;

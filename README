@@ -6,17 +6,31 @@ Instructions: run cmd 'make' or 'make all' to compile both executables
 of the project.
 Then run cmd './OSS' to run the project with the default preferences.
 
-Master accepts command line arguments to adjust properties of project:
+OSS accepts command line arguments to adjust properties of project:
 			-h: displays help message
 			-s [integer]: number of child processes spawned (max 18)
 			-i [integer]: number of writes before child terminates
 			-t [integer]: number of seconds master will wait
 			-l [filename]: name of file where log will be written
-			-c [integer]: amount sim time will be incremented
 
-Default simulated sys time increment is 100, which goes semi quickly in testing
-Can set custom with -c, but the interval must divide 1000000000.
-			
+These preferences, other than the file name, can also be set in a text file called
+"pref.dat"--along with the other preference variables used to affect the operation
+of the simulation. These of course can be set w/o re-compiling the project.
+Each preference in "pref.dat" includes a description of what it sets/does.
+
+The default preference values I decided on differ in some places from what was 
+suggested in the assignment pdf. They were adjusted to get runs that always 
+show the queueing etc. in action.
+
+All messages are written to the log file. During execution, messages are printed to the terminal only when a new process is generated and when a process has terminated.
+
+Termination of each process is decided randomly each time the process is scheduled
+(of course with a lower probability than random interrupt). I had initially set
+a random total time the process needed, but decided having a probability was
+more in keeping with a simulation.
+
+When a process is generated, its priority (which queue it goes in first) is
+randomly decided with a heavy bias towards 0 (highest priority).
+
 I used git for version control. The hidden git folders are included
-in my submission--in case they don't copy over I'll
-also save 'git log' to a text file called gitlogbckup.txt
+in my submission.

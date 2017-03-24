@@ -3,7 +3,7 @@ Default number of spawns
 Default max real-world seconds to run
 20
 Default max simulated seconds to run
-10
+2
 Max nanoseconds between spawns
 10000000
 Quantum for queue 0
@@ -17,4 +17,6 @@ Max CPU work time range will be [0, max)
 I/O interrupt probability (1 in n)
 6
 Terminate probability (1 in n)
-18
+50
+Lines written to log before stop writing
+10000

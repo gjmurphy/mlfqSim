@@ -12,27 +12,6 @@
 
 #include "stime.h"
 
-// Default values of preferences
-#define DFLT_SPAWNS 18
-#define DFLT_RWAIT 20
-#define DFLT_SWAIT 2
-#define DFLT_FILEN "test.out"
-
-// The range of the burst needed by each generated child process
-#define BURST_MAX 100000000
-#define BURST_MIN 20000000
-
-// The time in nanoseconds between each potential child spawn
-#define SPAWN_RT 10000000
-
-// Three quantums of the queues
-#define QUANT0 2000000
-#define QUANT1 4000000
-#define QUANT2 8000000
-
-// Range from 0 to this, how much time the cpu will take scheduling
-#define CPU_LOAD 1001
-
 // Hard coded keys for shared mem segments
 #define STM_KEY 4220
 #define PCB_KEY 5300

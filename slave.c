@@ -183,6 +183,7 @@ int main(int argc, char **argv) {
 			exit(EXIT_FAILURE);
 		}
 
+		// Set initial values of return message
 		ossBuf.mtype = 1;
 		ossBuf.finished = 0;
 		ossBuf.interrupt = 0;
@@ -190,16 +191,19 @@ int main(int argc, char **argv) {
 
 		quantum = schBuf.quantum;
 
-		// Check for termination
-		if ((rand() % terminateProb + 1) == terminateProb) {
+		// Check for termination using the termination probability
+		// 1 in terminateProb chance of terminating this cycle
+		if ((rand() % terminateProb + 1) == (terminateProb - 1)) {
+			// How much of this quantum to use before terminating
 			quantum = rand() % (quantum + 1);
 			pcb->last_burst = quantum;
 			ossBuf.finished = 1;
 			break;
 		}
 
-		// Check for interrupt
-		if ((rand() % interruptProb + 1) == interruptProb) {
+		// Check for interrupt using the interrupt probability
+		if ((rand() % interruptProb + 1) == (interruptProb - 1)) {
+			// When in the quantum does the interrupt occur
 			quantum = rand() % (quantum + 1);
 			ossBuf.interrupt = 1;
 		}
