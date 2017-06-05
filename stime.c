@@ -1,9 +1,8 @@
 /**
 * stime.c
-* Project 4 4760-E01
-* Author: Gabriel Murphy (gjmcn6)
-* Date: Mon Mar 20 STD 2017
-* Summary: helper functions for the stime struct used for simulated system time
+* Author: Gabriel Murphy
+* Date: Mon Mar 20 2017
+* Summary: helper functions for the stime struct used for simulated system clock
 */
 #include "stime.h"
 
@@ -12,6 +11,8 @@
 */
 void incrementTime(stime_t *time, long long delta) {
 	// Done this way to avoid overflowing nnsec, probably simpler way TODO
+
+	// delta (in nanoseconds) is less than one full second
 	if (delta < NS_PER_S) {
 		time->nnsec += delta;
 
@@ -20,6 +21,7 @@ void incrementTime(stime_t *time, long long delta) {
 			time->nnsec -= NS_PER_S;
 		}
 	}
+	// delta is great than or equal to one full second
 	else {
 		while (delta >= NS_PER_S) {
 			time->sec++;
