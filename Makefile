@@ -1,9 +1,9 @@
 CC     = gcc
 CFLAGS = -g
 TARGET1 = OSS
-TARGET2 = Slave
+TARGET2 = Process
 OBJS1   = oss.o stime.o queue.o
-OBJS2   = slave.o
+OBJS2   = process.o
 
 all: $(TARGET1) $(TARGET2)
 
@@ -22,8 +22,8 @@ queue.o: queue.c
 $(TARGET2): $(OBJS2)
 	$(CC) -o $(TARGET2) $(OBJS2)
 
-slave.o: slave.c
-	$(CC) $(CFLAGS) -c slave.c
+process.o: process.c
+	$(CC) $(CFLAGS) -c process.c
 
 clean:
 	/bin/rm -f *.o $(TARGET1) $(TARGET2) test.out

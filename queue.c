@@ -1,9 +1,8 @@
 /**
 * queue.c
-* Project 4 4760-E01
-* Author: Gabriel Murphy (gjmcn6)
-* Date: Mon Mar 20 STD 2017
-* Summary: Implementation of functions for queue
+* Author: Gabriel Murphy
+* Date: Mon Mar 20 2017
+* Summary: Implementation of functions for simple queue
 */
 #include "queue.h"
 #include <stdlib.h>
@@ -55,7 +54,7 @@ int pop(queue_t *queue) {
 
 /**
 * Prints the contents of the queue
-* Really only used during debugging 
+* Really only used during debugging the project
 */
 void printQueue(queue_t *queue) {
 	node_t *node = queue->head;

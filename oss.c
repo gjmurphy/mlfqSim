@@ -1,9 +1,13 @@
 /**
 * oss.c
-* Project 4 4760-E01
-* Author: Gabriel Murphy (gjmcn6)
-* Date: Mon Mar 20 STD 2017
-* Summary: 
+* Author: Gabriel Murphy
+* Date: Mon Mar 20 2017
+* Summary: Simulates multi level feedback queues for scheduling processes
+* to share a single thread. OSS sets up the shared memory, controls the
+* simulated system clock, randomly generates processes who then wait
+* to be dispatched from the mlfq. OSS also handles the return of dispatched
+* processes, prints the status of the system each cycle, and handles the
+* end of the of the simulation.
 */
 #include "oss.h"
 #include "queue.h"
@@ -13,18 +17,19 @@
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
+#include <errno.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <sys/wait.h>
 #include <sys/msg.h>
+#include <sys/wait.h>
 
 #define DFLT_FILEN "test.out"
 
-// Global vars, need to be global for signal handling purposes
+// Shared memory vars, need to be global for signal handling purposes
 stime_t *g_stime;
 int g_stimeId;
 
-struct pcb_t *g_pcb;
+pcb_t *g_pcb;
 int g_pcbId;
 
 int g_mschId;
@@ -33,48 +38,39 @@ int g_mossId;
 FILE *g_output;
 
 /**
-* Flags all shared mem segments for removal
+* Detatches pointer from shared mem and marks the segment for removal
+* Returns false if either op fails, true if both successful
+*/
+bool cleanSegment(void *pointer, int id) {
+	return (shmdt(pointer) != -1) && (shmctl(id, IPC_RMID, NULL) != -1);
+}
+
+/**
+* Marks a message queue for removal
+* Returns false if error, true if successful
+*/
+bool cleanMsgQueue(int id) {
+	return msgctl(id, IPC_RMID, NULL) != -1;
+}
+
+/**
+* Removes all shared mem segments and message queues
 * *Must* be called before any exit of process
 */
 void cleanUp() {
+	bool success = true;
 	fclose(g_output);
 
-	int success = 1;
-
-	// Detach from segment
-	if (shmdt(g_stime) == -1) {
-		perror("Detatch shared memory failed in OSS");
-		success = 0;
+	if (!cleanSegment(g_stime, g_stimeId) || !cleanSegment(g_pcb, g_pcbId)) {
+		fprintf(stderr, 
+			"OSS failed to remove shared mem segments: %s\n", strerror(errno));
+		success = false;
 	}
 
-	// Signal shared segment for removal
-	if (shmctl(g_stimeId, IPC_RMID, NULL) == -1) {
-		perror("Failed to mark shared number for removal");
-		success = 0;
-	}
-	
-	// Detach from segment
-	if (shmdt(g_pcb) == -1) {
-		perror("Detatch shared memory failed in OSS");
-		success = 0;
-	}
-
-	// Signal shared segment for removal
-	if (shmctl(g_pcbId, IPC_RMID, NULL) == -1) {
-		perror("Failed to mark shared number for removal");
-		success = 0;
-	}
-
-	// Signal scheduler message queue for removal
-	if (msgctl(g_mschId, IPC_RMID, NULL) == -1) {
-		perror("Failed to remove OSS message queue");
-		success = 0;
-	}
-
-	// Signal oss message queue for removal
-	if (msgctl(g_mossId, IPC_RMID, NULL) == -1) {
-		perror("Failed to remove OSS message queue");
-		success = 0;
+	if (!cleanMsgQueue(g_mschId) || !cleanMsgQueue(g_mossId)) {
+		fprintf(stderr, 
+			"OSS failed to remove shared message queues: %s\n", strerror(errno));
+		success = false;
 	}
 
 	if (!success) {
@@ -84,11 +80,9 @@ void cleanUp() {
 }
 
 /**
-* Uses setupSegment function to allocate the needed memory segments
+* Allocate and link to shared memory segments
 */
-void setupMemory(int spawns) {
-	int i;
-
+void setupMemory(int numProcess) {
 	// Allocate segment of shared memory
 	if ((g_stimeId = shmget(STM_KEY, sizeof(stime_t), IPC_CREAT | 0660)) < 0) {
 		perror("Allocating shared memory failed in OSS");
@@ -104,7 +98,7 @@ void setupMemory(int spawns) {
 	}
 	
 	// Allocate segment of shared memory for pcb array
-	if ((g_pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * spawns, IPC_CREAT | 0660)) < 0) {
+	if ((g_pcbId = shmget(PCB_KEY, sizeof(struct pcb_t) * numProcess, IPC_CREAT | 0660)) < 0) {
 		perror("Allocating shared memory failed in OSS");
 		cleanUp();
 		exit(EXIT_FAILURE);
@@ -123,7 +117,9 @@ void setupMemory(int spawns) {
 	// Initialize shared nanoseconds to 0
 	g_stime->nnsec = 0;
 
-	for (i = 0; i < spawns; i++) {
+	int i;
+
+	for (i = 0; i < numProcess; i++) {
 		g_pcb[i].id = -1;
 	}
 
@@ -159,11 +155,11 @@ void sigHandler(int sig) {
 /**
 * Kills all child processes using their ids in the pcb
 */
-void abortAll(int spawns) {
+void abortAll(int numProcess) {
 	int i;
 
-	for (i = 0; i < spawns; i++) {
-		if (g_pcb[i].id != -1) {
+	for (i = 0; i < numProcess; i++) {
+		if (g_pcb[i].exists) {
 			kill(g_pcb[i].id, SIGABRT);
 		}
 	}
@@ -174,69 +170,56 @@ void abortAll(int spawns) {
 /**
 * Creates a new pcb entry and forks/execs new process
 */
-void generateChild(int spawns, int index, int intProb, int termProb) {
+void generateChild(int numProcess, int index, int intMin, int intMax, int termMin, int termMax) {
 	struct pcb_t pcb;
 	pid_t thisPid;
-	int priorityProb;
+	int intProb, termProb;
 
-	// Make sure previous child in this pcb has fully terminated
+	// Make sure previous child occupying this pcb spot has fully terminated
 	if (g_pcb[index].id != -1) {
 		waitpid(g_pcb[index].id, NULL, 0);
 	}
 
 	// Setup pcb values
+	pcb.exists = true;
+	pcb.waiting = false;
 
-
-
-	pcb.start_time = *g_stime;
+	pcb.startTime = *g_stime;
 	
-	priorityProb = rand() % 100 + 1;
-
-	// Priority determines which queue is put in
-	// Randomly select initial priority (heavy bias towards 0) 
-
-	// 85% chance of queue 0
-	if (priorityProb <= 85) {
-		pcb.priority = 0;
-	}
-	// 10% chance of queue 1
-	else if (priorityProb > 85 && priorityProb <= 95) {
-		pcb.priority = 1;
-	}
-	// 5% chance of queue 2
-	else {
-		pcb.priority = 2;
-	}
-
-	pcb.last_burst = 0;
-	pcb.wait_time = 0;
+	pcb.priority = 0;
+	pcb.lastBurst = 0;
+	pcb.sysWaitTime.sec = 0;
+	pcb.sysWaitTime.nnsec = 0;
 
 	g_pcb[index] = pcb;
+
+	intProb = (rand() % (intMax + 1 - intMin)) + intMin;
+	termProb = (rand() % (termMax + 1 - termMin)) + termMin;
 
 	// Fork and exec new process
 
 	thisPid = fork();
 
-	// Child 
+	// Child does this
 	if (thisPid == 0) {
-		// index in the pcb array is sent to Slave
+		// index in the pcb array is sent to Process
 		char indexArg[8];
-		char spawnArg[8];
+		char procArg[8];
 		char intProbArg[8];
 		char termProbArg[8];
 		snprintf(indexArg, 8, "%d", index);
-		snprintf(spawnArg, 8, "%d", spawns);
+		snprintf(procArg, 8, "%d", numProcess);
 		snprintf(intProbArg, 8, "%d", intProb);
 		snprintf(termProbArg, 8, "%d", termProb);
 
-		// Exec Slave from child process
-		execl("./Slave", indexArg, spawnArg, intProbArg, termProbArg, NULL);
+		// Exec Process from child
+		execl("./Process", indexArg, procArg, intProbArg, termProbArg, NULL);
 
 		// Should never reach here
-		perror("Failed to execute Slave");
+		fprintf(stderr, "Failed to exec Process %d: %s", thisPid, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-	// Parent
+	// Parent does this
 	else {
 		g_pcb[index].id = thisPid;
 	}
@@ -263,6 +246,17 @@ long long realTimeSinceEpoch() {
 
 	// timespec has two fields that must be combined to get full nanoseconds
 	return ((long long) timeSpec.tv_sec * 1000000000L + (long long) timeSpec.tv_nsec);
+}
+
+int intPow(int base, unsigned int exp) {
+	int i;
+	int result = 1;
+
+	for (i = 0; i < base; i++) {
+		result *= base;
+	}
+
+	return result;
 }
 
 /**
@@ -294,6 +288,80 @@ void readPreferences(int *prefs) {
 }
 
 /**
+* Clears terminal and prints the status of the system
+*/
+void printStatus(int pcbIndex, int numProcess, int numQueues, queue_t *queues) {
+	int i;
+
+	// Clear terminal (*nix systems only)
+	printf("\033[2J");
+
+	// Prints the status of each entry in the PCB
+	
+	printf("PCB:\n");
+
+	for (i = 0; i < numProcess; i++) {
+		printf("%2d |", i);
+		if (g_pcb[i].exists) {
+			printf("PID: %d ", g_pcb[i].id);
+			printf("|Time in system: %2d.%-9d ", 
+				g_stime->sec - g_pcb[i].startTime.sec, g_stime->nnsec - g_pcb[i].startTime.nnsec);
+			printf("|Time waiting: %2d.%-9d ", g_pcb[i].sysWaitTime.sec, g_pcb[i].sysWaitTime.nnsec);
+			if (g_pcb[i].waiting) {
+				printf("*Waiting on I/O*");
+			}
+		}
+		printf("\n");
+	}
+
+	// Print which processes are waiting on I/O
+
+	printf("I/O Wait Queue:");
+
+	for (i = 0; i < numProcess; i++) {
+		if (g_pcb[i].exists && g_pcb[i].waiting) {
+			printf(" |%d|", g_pcb[i].id);
+		}
+	}
+
+	// Print the processes in each of the queues
+
+	printf("\n");
+
+	for (i = 0; i < numQueues; i++) {
+		printf("Queue %d:", i);
+
+		node_t *current = queues[i].head;
+
+		while (current != NULL) {
+			printf(" |%d|", g_pcb[current->index].id);
+
+			current = current->next;
+		}
+
+		printf("\n");
+	}
+
+	printf("Simulated system time: %d.%d\n", g_stime->sec, g_stime->nnsec);
+
+	printf("Process scheduled: ");
+
+	if (pcbIndex != -1) {
+		printf("|%d|", g_pcb[pcbIndex].id);
+		if (g_pcb[pcbIndex].waiting) {
+			printf(" *I/O*");
+		}
+		else if (!g_pcb[pcbIndex].exists) {
+			printf(" *Finished*");
+		}
+		printf("\n");
+	}
+	else {
+		printf("None\n");
+	}
+}
+
+/**
 * Main function
 */
 int main(int argc, char **argv) {
@@ -301,7 +369,7 @@ int main(int argc, char **argv) {
 	char *optErrMsg = "try \'%s -h\' for more information\n";
 	char *helpMsg = "%s options:\n"
 			"-h: displays this help message\n"
-			"-s [integer]: number of child processes spawned (max 18)\n"
+			"-s [integer]: number of child processes to generate (max 18)\n"
 			"-t [integer]: number of seconds OSS will wait\n"
 			"-l [filename]: name of file where log will be written\n";
 	int c = 0;
@@ -312,35 +380,46 @@ int main(int argc, char **argv) {
 
 	// preference variables
 	char *filename = DFLT_FILEN;
-	int spawns = prefs[0];
-	int waitReal = prefs[1];
-	int waitSim = prefs[2];
-	int spawnRate = prefs[3];
-	int quantums[3] = {prefs[4], prefs[5], prefs[6]};
-	int workMax = prefs[7]; 
+	int numProcess = prefs[0];
+	int numQueues = prefs[1];
+	int waitReal = prefs[2];
+	int waitSim = prefs[3];
+	int generateRate = prefs[4];
+	int quantumFactor = prefs[5];
+	int workMax = prefs[6];
+	int maxLines = prefs[7];
+	int intMin = prefs[8];
+	int intMax = prefs[9];
+	int termMin = prefs[10];
+	int termMax = prefs[11];
+	int sleepAmount = prefs[12];
+	int maxIoWait = prefs[13];
 
 	// process variables
 	int i = 0;
+	int pcbIndex = -1;
+	int workTime;
 	
-	stime_t spawnTime = {0, 0};
+	// Used to track when to generate a new child
+	stime_t generateTime = {0, 0};
+
+	// Used to track statistics
 	stime_t cpuIdleTime = {0, 0};
 	stime_t totalWait = {0, 0};
 	stime_t averageWait = {0, 0};
 	stime_t totalTurn = {0, 0};
 	stime_t averageTurn = {0, 0};
 
-	// The three priority queues
-	queue_t queues[3];
+	// Priority queues -- where processes wait to be scheduled
+	// Higher the queue, lower the priority
+	queue_t *queues;
 
-	for (i = 0; i < 3; i++) {
-		queues[i] = createQueue();
-	}
+	// Quantum coresponding to each priority queue
+	int *quantums;
 
 	int lineCount = 1;
 	int totalProcesses = 0;
 	int totalFinished = 0;
-
-	short *pcbVector;
 
 	char logBuff[128];
 
@@ -368,11 +447,11 @@ int main(int argc, char **argv) {
 			case 'h':
 				printf(helpMsg, argv[0]);
 				return 0;
-			// Number of children spawned
+			// Number of simultaneous processes 
 			case 's':
-				spawns = strtol(optarg, NULL, 10);
-				if (spawns > 18) {
-					fprintf(stderr, "Max number of spawned Slaves is 18\n");
+				numProcess = strtol(optarg, NULL, 10);
+				if (numProcess > 18) {
+					fprintf(stderr, "Max number of simultaneous processes is 18\n");
 					return 1;
 				}
 				break;
@@ -380,7 +459,7 @@ int main(int argc, char **argv) {
 			case 'l':
 				filename = strdup(optarg);
 				break;
-			// Time OSS waits for slaves to finish
+			// Max number of real-time seconds OSS runs for
 			case 't':
 				waitReal = strtol(optarg, NULL, 10);
 				break;
@@ -392,17 +471,28 @@ int main(int argc, char **argv) {
 	}
 
 	// Allocate and init shared memory
-	setupMemory(spawns);
+	setupMemory(numProcess);
 
-	// Allocate memory for array used to denote which pcb is free	
-	if ((pcbVector = calloc(1, sizeof(short) * spawns)) == NULL) {
-		perror("Failed to allocate memory for pcbVector array");
+	// Allocate memory for array used for the priority queues	
+	if ((queues = calloc(numQueues, sizeof(queue_t))) == NULL) {
+		perror("Failed to allocate memory for priority queue array");
 		cleanUp();
 		return 1;
 	}
 
-	// Mark all pcb's in array as empty
-	memset(pcbVector, 0, spawns);
+	// Allocate memory for array used for the queue's quantum	
+	if ((quantums = calloc(numQueues, sizeof(int))) == NULL) {
+		perror("Failed to allocate memory for priority queue array");
+		cleanUp();
+		return 1;
+	}
+
+	// Initialize the priority queues and calculate quantums
+	for (i = 0; i < numQueues; i++) {
+		queues[i] = createQueue();
+		// 2^i * quantumFactor
+		quantums[i] = intPow(2, i) * quantumFactor;
+	}
 
 	// Delete old log file if it exists
 	remove(filename);
@@ -421,26 +511,21 @@ int main(int argc, char **argv) {
 
 	// Main loop
 	while (1) {
-		int pcbIndex = -1;
-		int workTime = rand() % workMax;
-
-		// Spawn new child processes if time reached
-		if (gte(g_stime, &spawnTime)) {
+		// Generate new child processes if time reached
+		if (gte(g_stime, &generateTime)) {
 			int tempIndex = -1;
 
 			// Find if there is a free pcb using the pcbVector
-			for (i = 0; i < spawns; i++) {
-				if (!pcbVector[i]) {
+			for (i = 0; i < numProcess; i++) {
+				if (!g_pcb[i].exists) {
 					tempIndex = i;
+					break;
 				}
 			}
 
 			// Generate new child process if a free pcb was found
 			if (tempIndex != -1) {
-				generateChild(spawns, tempIndex, prefs[8], prefs[9]);
-
-				// Set pcb as used in pcbVector
-				pcbVector[tempIndex] = 1;
+				generateChild(numProcess, tempIndex, intMin, intMax, termMin, termMax);
 
 				totalProcesses++;
 
@@ -451,35 +536,49 @@ int main(int argc, char **argv) {
 					" and putting in queue %d at time %d.%d\n",
 					g_pcb[tempIndex].id, g_pcb[tempIndex].priority, g_stime->sec, g_stime->nnsec);
 
-				printf("%s", logBuff);
-
-				writeToLog(logBuff, &lineCount, prefs[10]);
+				writeToLog(logBuff, &lineCount, maxLines);
 			}
 
-			// Generate new spawn time
-			spawnTime = *g_stime;
-			incrementTime(&spawnTime, rand() % spawnRate);
+			// Time to generate next process
+			generateTime = *g_stime;
+			incrementTime(&generateTime, (rand() % generateRate) + 1);
 		}
+
+		// Print the current status of the system to terminal
+		printStatus(pcbIndex, numProcess, numQueues, queues);
+
+		pcbIndex = -1;
+
+		// Check if there is a waiting process whose I/O has returned
+		for (i = 0; i < numProcess; i++) {
+			if (g_pcb[i].waiting && gte(g_stime, &g_pcb[i].ioFinishTime)) {
+				g_pcb[i].waiting = false;
+				pcbIndex = i;
+				break;
+			}
+		}
+
+		// If no waiting processes, find the next ready process to dispatch
+		if (pcbIndex == -1) {
+			// Check each queue in order of priority
+			for (i = 0; i < numQueues; i++) {
+				if (queues[i].size != 0) {
+					pcbIndex = pop(&queues[i]);
+					break;
+				}
+			}
+		}
+
+		workTime = (rand() % workMax) + 1;
 
 		// Add cpu work time to simulated system time  
 		incrementTime(g_stime, workTime);
 
 		// Add cpu work time to the wait time of each active pcb
-		for (i = 0; i < spawns; i++) {
-			if (pcbVector[i]) {
-				g_pcb[i].wait_time += workTime;
+		for (i = 0; i < numProcess; i++) {
+			if (g_pcb[i].exists && !g_pcb[i].waiting) {
+				incrementTime(&g_pcb[i].sysWaitTime, workTime);
 			}
-		}		
-
-		// Find next process to schedule
-		if (queues[0].size != 0) {
-			pcbIndex = pop(&queues[0]);
-		}
-		else if (queues[1].size != 0) {
-			pcbIndex = pop(&queues[1]);	
-		}
-		else if (queues[2].size != 0) {
-			pcbIndex = pop(&queues[2]);	
 		}
 
 		// Schedule child process if one was found waiting
@@ -493,7 +592,7 @@ int main(int argc, char **argv) {
 			snprintf(logBuff, 128, "OSS: Dispatching process with PID %d"
 				                    " from queue %d at time %d.%d\n",
 					g_pcb[pcbIndex].id, g_pcb[pcbIndex].priority, g_stime->sec, g_stime->nnsec);
-			writeToLog(logBuff, &lineCount, prefs[10]);
+			writeToLog(logBuff, &lineCount, maxLines);
 
 			// Send message to child proccess (msg type is child pid) to schedule 
 			if (msgsnd(g_mschId, &schBuf, sizeof(struct sch_msgbuf), 0) == -1) {
@@ -504,7 +603,7 @@ int main(int argc, char **argv) {
 
 			snprintf(logBuff, 128, "  OSS: Total time this dispatch %d nanoseconds\n",
 					workTime);
-			writeToLog(logBuff, &lineCount, prefs[10]);
+			writeToLog(logBuff, &lineCount, maxLines);
 
 			// Wait for return message from child process
 			if (msgrcv(g_mossId, &ossBuf, sizeof(struct oss_msgbuf), 1, 0) == -1){
@@ -515,16 +614,16 @@ int main(int argc, char **argv) {
 
 			snprintf(logBuff, 128, "    OSS: Receiving that process with PID %d"
 					" ran for %d nanoseconds\n",
-					g_pcb[pcbIndex].id, g_pcb[pcbIndex].last_burst);
-			writeToLog(logBuff, &lineCount, prefs[10]);
+					g_pcb[pcbIndex].id, g_pcb[pcbIndex].lastBurst);
+			writeToLog(logBuff, &lineCount, maxLines);
 
 			// Increment system time to that of child's last burst
-			incrementTime(g_stime, g_pcb[pcbIndex].last_burst);
+			incrementTime(g_stime, g_pcb[pcbIndex].lastBurst);
 
 			// Increment the wait time of any active pcb except the one that just ran
-			for (i = 0; i < spawns; i++) {
-				if (i != pcbIndex && pcbVector[i]) {
-					g_pcb[i].wait_time += g_pcb[pcbIndex].last_burst;
+			for (i = 0; i < numProcess; i++) {
+				if (i != pcbIndex && g_pcb[i].exists && !g_pcb[i].waiting) {
+					incrementTime(&g_pcb[i].sysWaitTime, g_pcb[pcbIndex].lastBurst);
 				}
 			}
 
@@ -532,54 +631,60 @@ int main(int argc, char **argv) {
 			if (ossBuf.finished) {
 				snprintf(logBuff, 128, "XX OSS: Process with PID %d finished at time %d.%d\n",
 					g_pcb[pcbIndex].id, g_stime->sec, g_stime->nnsec);
-				printf("%s", logBuff);
-				writeToLog(logBuff, &lineCount, prefs[10]);
+				writeToLog(logBuff, &lineCount, maxLines);
 
 				// Subtract current time form start time and add it to total turnaround
-				incrementTime(&totalTurn, combined(g_stime) - combined(&g_pcb[pcbIndex].start_time));
+				incrementTime(&totalTurn, combined(g_stime) - combined(&g_pcb[pcbIndex].startTime));
 				
 				// Add the pcb's wait time to total wait time
-				incrementTime(&totalWait, g_pcb[pcbIndex].wait_time);
+				incrementTime(&totalWait, combined(&g_pcb[pcbIndex].sysWaitTime));
 
 				// Mark pcb as free
-				pcbVector[pcbIndex] = 0;
+				g_pcb[pcbIndex].exists = false;
+				g_pcb[pcbIndex].waiting = false;
 				totalFinished++;
 			}
 			// Not finished so find which queue to go to
 			else {
-				int priority = g_pcb[pcbIndex].priority;
-
-				// Child process was interrupted, goes to queue 0
+				// Child process was interrupted
 				if (ossBuf.interrupt) {
-					priority = 0;
+					// After wait is handled, will be reset to priority 0 (highest priority)
+					g_pcb[pcbIndex].priority = -1;
 
-					snprintf(logBuff, 128, "    OSS: Not using its entire quantum\n");
+					snprintf(logBuff, 128, "    OSS: Process %d was interrupted, adding to wait queue\n",
+							g_pcb[pcbIndex].id);
+					writeToLog(logBuff, &lineCount, maxLines);
 
-					writeToLog(logBuff, &lineCount, prefs[10]);
+					// Mark as waiting for I/O
+					g_pcb[pcbIndex].waiting = true;
+
+					g_pcb[pcbIndex].ioFinishTime = *g_stime;
+					incrementTime(&g_pcb[pcbIndex].ioFinishTime, (rand() % maxIoWait) + 1);
 				}
-				// Otherwise reduce by 1 (unless already at priority 2)
-				else if (priority < 2) {
-					priority++;
+				// Used all of quantum, adjust priority
+				else {
+					// Move down one level (unless already at lowest queue)
+					g_pcb[pcbIndex].priority += (g_pcb[pcbIndex].priority < (numQueues - 1));
+
+					// Add to back of proper queue
+					push(&queues[g_pcb[pcbIndex].priority], pcbIndex);
+
+					snprintf(logBuff, 128, "      OSS: Putting process with PID %d into queue %d\n",
+						g_pcb[pcbIndex].id, g_pcb[pcbIndex].priority);
+					writeToLog(logBuff, &lineCount, maxLines);
 				}
-
-				snprintf(logBuff, 128, "      OSS: Putting process with PID %d into queue %d\n",
-					g_pcb[pcbIndex].id, priority);
-				writeToLog(logBuff, &lineCount, prefs[10]);
-
-				// Add to back of proper queue
-				push(&queues[priority], pcbIndex);
-				// Update pcb
-				g_pcb[pcbIndex].priority = priority;
 			}
 		}
-		// No process to schedule, so increment work time as idle
+		// No processes to be scheduled, CPU is idle
 		else {
-			incrementTime(&cpuIdleTime, workTime);
+			// Larger increment needed to get to next process to generate
+			incrementTime(g_stime, rand() % (workMax * 100));
+			incrementTime(&cpuIdleTime, rand() % (workMax * 100));
 		}
 
-		// Check if OSS has spawned the max number of children
+		// Check if OSS has generated the max number of children (total)
 		if (totalProcesses >= 100) {
-			printf("OSS has spawned 100 children, exiting\n");
+			printf("OSS has generated 100 total processes, exiting\n");
 			break;
 		}
 
@@ -594,9 +699,13 @@ int main(int argc, char **argv) {
 			printf("Real time ended\n");
 			break;
 		}
+
+		// Allows printed status of system to be viewable to user
+		usleep(sleepAmount);
 	}	
 
-	abortAll(spawns);
+	// Kill all active processes
+	abortAll(numProcess);
 
 	cleanUp();
 

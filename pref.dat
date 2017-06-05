@@ -1,22 +1,28 @@
-Default number of spawns
-18
+Max number of simultaneous processes in system
+16
+Numuber of queues
+6
 Default max real-world seconds to run
-20
+120
 Default max simulated seconds to run
 2
 Max nanoseconds between spawns
-10000000
-Quantum for queue 0
-200000
-Quantum for queue 1
-400000
-Quantum for queue 2
-800000
-Max CPU work time range will be [0, max)
-1001
-I/O interrupt probability (1 in n)
-6
-Terminate probability (1 in n)
-50
+5000000
+Quantum factor ((2^n * factor) where n is the number of the queue)
+100000
+Max CPU work time range
+10000
 Lines written to log before stop writing
 10000
+Min I/O interrupt probability (1 in n)
+4
+Max I/O interrupt probability (1 in n)
+12
+Min terminate probability (1 in n)
+12
+Max terminate probability (1 in n)
+26
+Display speed
+300000
+Max I/O Wait time
+1000000

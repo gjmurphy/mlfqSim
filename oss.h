@@ -1,9 +1,8 @@
 /**
 * oss.h
-* Project 4 4760-E01
-* Author: Gabriel Murphy (gjmcn6)
-* Date: Mon Mar 20 STD 2017
-* Summary: Contains definitions shared between OSS and Slave
+* Author: Gabriel Murphy
+* Date: Mon Mar 20 2017
+* Summary: Contains definitions shared between OSS and Process
 * and also the structs of the message buffers used in the two
 * message queues and the pcb 
 */
@@ -11,6 +10,9 @@
 #define OSS_H
 
 #include "stime.h"
+
+// C boolean type
+typedef enum {false, true} bool;
 
 // Hard coded keys for shared mem segments
 #define STM_KEY 4220
@@ -21,26 +23,29 @@
 #define OSS_KEY 7762
 
 // Struct used for the shared array of pcbs in OSS
-struct pcb_t {
+typedef struct pcb_t {
 	int id;
+	bool exists;
+	bool waiting;
 	int priority;
-	int last_burst;
-	long wait_time;
-	stime_t start_time;
-};
+	int lastBurst;
+	stime_t sysWaitTime;
+	stime_t ioFinishTime;
+	stime_t startTime;
+} pcb_t;
 
-// Struct for sending message to Slave when it has been scheduled 
+// Struct for sending message to Process when it has been scheduled 
 struct sch_msgbuf {
 	long mtype;
 	int quantum;
 };
 
-// Struct for Slave sending message back to OSS when it is finished
+// Struct for Process sending message back to OSS when it is finished
 struct oss_msgbuf {
 	long mtype;
 	int index;
-	short interrupt;
-	short finished;
+	bool interrupt;
+	bool finished;
 };
 
 #endif
