@@ -248,6 +248,10 @@ long long realTimeSinceEpoch() {
 	return ((long long) timeSpec.tv_sec * 1000000000L + (long long) timeSpec.tv_nsec);
 }
 
+/**
+* Power function, returns base**exp
+* Unlike math.h pow, is integer based
+*/
 int intPow(int base, unsigned int exp) {
 	int i;
 	int result = 1;
@@ -374,12 +378,13 @@ int main(int argc, char **argv) {
 			"-l [filename]: name of file where log will be written\n";
 	int c = 0;
 
-	// Read preferences from file
-	int prefs[11];
-	readPreferences(prefs);
-
-	// preference variables
 	char *filename = DFLT_FILEN;
+	
+	// Read values from the pref file and store them in an array
+	int prefs[14];
+	readPreferences(prefs);
+	
+	// Assign the values read from the pref file to their respective variables
 	int numProcess = prefs[0];
 	int numQueues = prefs[1];
 	int waitReal = prefs[2];
